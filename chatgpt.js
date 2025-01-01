@@ -1,0 +1,363 @@
+/*
+
+ChatGPT Keyboard by Neurogram
+
+ - Support editing tools
+ - Support appending or overwriting prompts with generated result
+ - Support custom roles.
+ - Support prompts templates.
+ - Support multi round of dialogue
+ - Support displaying length of prompts
+ - Support displaying tokens usage reminder
+
+ Manual: https://neurogram.notion.site/ChatGPT-Keyboard-af8f7c74bc5c47989259393c953b8017
+
+*/
+
+
+const api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" // Your API key
+const model = "gpt-3.5-turbo"
+const user_gesture = { // Generated results: 0: auto-wrap 1: overwrite selected/all prompts  
+    tap: 1,
+    long_press: 0
+}
+const usage_toast = true // Display usage toast
+
+const keyboard_sound = true
+const keyboard_vibrate = -1 // -1: no vibration, 0~2: vibration level
+const edit_tool_columns = 5
+const chatgpt_role_columns = 3
+const keyboard_spacing = 5
+const keyboard_height = 40
+const keyboard_total_height = 0
+$keyboard.barHidden = false
+
+const heartbeat = 2 // -1: no heartbeat, 0~2: heartbeat level
+const heartbeat_interval = 1.2 // seconds
+
+const role_data = { // "Role Name": ["System Content", "Prompts Template"]
+    "ð¤ Assistant": ["You are a helpful assistant.", ""],
+    "ð Explainer": ["", "Explain the following content:"],
+    "ð¨ð³ Translator": ["Translate content into Chinese.", ""],
+    "ðï¸ Summarizer": ["", "Summarize the following content:"],
+    "ð Expander": ["", "{USER_CONTENT}\n\nExpand the above content"],
+    "ðºð¸ Translator": ["Translate content into English.", ""]
+}
+
+const edit_tool = {
+    "Start": "arrow.left.to.line",
+    "Left": "arrow.left",
+    "Right": "arrow.right",
+    "End": "arrow.right.to.line",
+    "Return": "return",
+    "Copy": "doc.on.doc",
+    "Paste": "doc.on.clipboard",
+    "Cut": "scissors",
+    "Empty": "trash",
+    "Dismiss": "keyboard.chevron.compact.down"
+}
+
+const edit_tool_amount = Object.keys(edit_tool).length
+let dialogue = $cache.get("dialogue")
+let multi_turn = false
+if (dialogue) multi_turn = dialogue.mode
+
+$app.theme = "auto"
+const view = {
+    props: {
+        title: "ChatGPT",
+        navBarHidden: $app.env == $env.keyboard,
+        pageSheet: $app.env == $env.keyboard,
+    },
+    views: [{
+        type: "matrix",
+        props: {
+            spacing: keyboard_spacing,
+            bgcolor: $color("clear"),
+            data: dataPush(Object.keys(edit_tool).concat(Object.keys(role_data))),
+            template: {
+                props: {},
+                views: [{
+                    type: "button",
+                    props: {
+                        id: "button",
+                        radius: 10,
+                        titleColor: $color("black", "white"),
+                        tintColor: $color("black", "white"),
+                        bgcolor: $color("#FFFFFF", "#6B6B6B"),
+                        align: $align.center
+                    },
+                    layout: $layout.fill,
+                    events: {
+                        tapped: function (sender, indexPath, data) {
+                            handler(sender, "tap")
+                        },
+                        longPressed: function (info, indexPath, data) {
+                            handler(info.sender, "long_press")
+                        }
+                    }
+                }]
+            },
+            footer: {
+                type: "button",
+                props: {
+                    id: "footer",
+                    height: 20,
+                    title: " ChatGPT Keyboard by Neurogram",
+                    titleColor: $color("#AAAAAA"),
+                    bgcolor: $color("clear"),
+                    symbol: multi_turn ? "bubble.left.and.bubble.right" : "bubble.left",
+                    tintColor: $color("#AAAAAA"),
+                    align: $align.center,
+                    font: $font(10)
+                },
+                events: {
+                    tapped: async (sender) => {
+                        const popover = $ui.popover({
+                            sourceView: sender,
+                            sourceRect: sender.bounds,
+                            directions: $popoverDirection.any,
+                            size: $size(320, 200),
+                            views: [
+                                {
+                                    type: "scroll",
+                                    layout: function (make, view) {
+                                        make.edges.insets($insets(10, 10, 10, 10))
+                                    },
+                                    views: [{
+                                        type: "label",
+                                        props: {
+                                            text: await get_content(1),
+                                            font: $font(15),
+                                            lines: 0
+                                        },
+                                        layout: function (make, view) {
+                                            make.width.equalTo(300)
+                                        },
+                                        events: {
+                                            tapped: () => {
+                                                popover.dismiss()
+                                            }
+                                        }
+                                    }]
+                                }
+                            ]
+                        })
+                    },
+                    longPressed: function (info) {
+                        multi_turn = multi_turn ? false : true
+                        set_bubble()
+                        $ui.toast("Dialogue Mode " + (multi_turn ? "On" : "Off"))
+                        $cache.set("dialogue", { mode: multi_turn })
+                    }
+                }
+            }
+        },
+        layout: $layout.fill,
+        events: {
+            itemSize: function (sender, indexPath) {
+                let keyboard_columns = indexPath.item < edit_tool_amount ? edit_tool_columns : chatgpt_role_columns
+                return $size(($device.info.screen.width - (keyboard_columns + 1) * keyboard_spacing) / keyboard_columns, keyboard_height);
+            }
+        }
+    }],
+    layout: (make, view) => {
+        make.width.equalTo(view.super)
+        if (keyboard_total_height){
+            make.height.equalTo(keyboard_total_height)
+        } else {
+            make.height.equalTo(view.super)
+        }
+    }
+}
+if ($app.env === $env.keyboard) {
+    $ui.render()
+    $delay(0, () => {
+        $ui.controller.view = $ui.create(view)
+        $ui.controller.view.layout(view.layout)
+    })
+} else {
+    $ui.render(view)
+}
+
+function dataPush(data) {
+    let key_title = []
+    for (let i = 0; i < data.length; i++) {
+        key_title.push({
+            button: {
+                title: i < edit_tool_amount ? "" : data[i],
+                symbol: i < edit_tool_amount ? edit_tool[data[i]] : "",
+                info: { action: i < edit_tool_amount ? data[i] : "" }
+            }
+        })
+    }
+    return key_title
+}
+
+function handler(sender, gesture) {
+    if (keyboard_sound) $keyboard.playInputClick()
+    if (keyboard_vibrate != -1) $device.taptic(keyboard_vibrate)
+    if ($app.env != $env.keyboard) return $ui.warning("Please Run In Keyboard")
+    if (sender.info.action) return edit(sender.info.action, gesture)
+    gpt(sender.title, gesture)
+}
+
+async function edit(action, gesture) {
+
+    let before = $keyboard.textBeforeInput ? $keyboard.textBeforeInput.length : 0
+    let after = $keyboard.textAfterInput ? $keyboard.textAfterInput.length : 0
+
+    if (action == "Start") return $keyboard.moveCursor(-before)
+    if (action == "Left") return $keyboard.moveCursor(-1)
+    if (action == "Right") return $keyboard.moveCursor(1)
+    if (action == "End") return $keyboard.moveCursor(after)
+    if (action == "Return") return $keyboard.insert("\n")
+    if (action == "Paste") return $keyboard.insert($clipboard.text || "")
+    if (action == "Dismiss") return gesture == "tap" ? $app.close() : $keyboard.dismiss()
+    if (action == "Empty" && gesture == "tap") return $keyboard.delete()
+
+    let content = await get_content(0)
+    if (action != "Empty") $clipboard.text = content
+
+    if (action == "Copy") return $ui.success("Done")
+
+    if (action == "Cut" || action == "Empty") {
+        if (!$keyboard.selectedText) {
+            $keyboard.moveCursor(after)
+            delete_content(content.length)
+        }
+        if ($keyboard.selectedText) $keyboard.delete()
+    }
+
+}
+
+let generating = false
+let timer = ""
+let generating_icon = 0
+
+async function gpt(role, gesture) {
+
+    if (generating) return $ui.warning("In Generating")
+    let user_content = await get_content(0)
+    if (!user_content && !multi_turn) return $ui.warning("No Prompts Found")
+
+    generating = true
+
+    let messages = []
+
+    if (multi_turn) {
+
+        if ($keyboard.selectedText) $keyboard.moveCursor(1)
+
+        if (!user_content.match(/âï¸ SYSTEM:[^ð]+/)) {
+            $ui.warning("No Dialogue Found")
+            $keyboard.insert(`\nâï¸ SYSTEM:\n${role_data[role][0] || "-"}ð\n\nð¨âð» USER:\n`)
+            generating = false
+            return
+        }
+
+        let contents = user_content.match(/(ð¨âð» USER|ð¤ ASSISTANT):\n([^ð]+)/g)
+
+        if (contents) {
+            for (let i in contents) {
+                if (contents[i].match(/ð¨âð» USER:\n([^ð]+)/)) messages.push({ "role": "user", "content": contents[i].match(/ð¨âð» USER:\n([^ð]+)/)[1] })
+                if (contents[i].match(/ð¤ ASSISTANT:\n([^ð]+)/)) messages.push({ "role": "assistant", "content": contents[i].match(/ð¤ ASSISTANT:\n([^ð]+)/)[1] })
+            }
+        }
+
+        if (!contents || messages[messages.length - 1].role != "user") {
+            $ui.warning("No User Content Found")
+            generating = false
+            return
+        }
+
+        let system_content = user_content.match(/âï¸ SYSTEM:\n([^ð]+)/)[1]
+        if (system_content != "-") messages = [{ "role": "system", "content": system_content }].concat(messages)
+    }
+
+    if (!multi_turn) {
+        if (!user_gesture[gesture]) {
+            $keyboard.moveCursor(1)
+            $keyboard.insert("\n")
+        }
+
+        if (user_gesture[gesture] && !$keyboard.selectedText) delete_content(user_content.length)
+
+        if (role_data[role][0]) messages.push({ "role": "system", "content": role_data[role][0] })
+
+        let preset_prompt = role_data[role][1]
+        if (preset_prompt && !preset_prompt.match(/{USER_CONTENT}/)) user_content = preset_prompt + "\n" + user_content
+        if (preset_prompt && preset_prompt.match(/{USER_CONTENT}/)) user_content = preset_prompt.replace(/{USER_CONTENT}/g, user_content)
+
+        messages.push({ "role": "user", "content": user_content })
+    }
+
+    if (heartbeat != -1) {
+        timer = $timer.schedule({
+            interval: heartbeat_interval,
+            handler: async () => {
+                $device.taptic(heartbeat)
+                $("footer").symbol = "ellipsis.bubble.fill"
+                await $wait(0.2)
+                $device.taptic(heartbeat)
+                $("footer").symbol = "ellipsis.bubble"
+            }
+        })
+    }
+
+    if (heartbeat == -1) {
+        timer = $timer.schedule({
+            interval: heartbeat_interval / 2,
+            handler: async () => {
+                if (generating_icon) {
+                    generating_icon = 0
+                    $("footer").symbol = "ellipsis.bubble"
+                } else {
+                    generating_icon = 1
+                    $("footer").symbol = "ellipsis.bubble.fill"
+                }
+            }
+        })
+    }
+
+    let openai = await $http.post({
+        url: "https://api.openai.com/v1/chat/completions",
+        header: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${api_key}`
+        },
+        body: {
+            "model": model,
+            "messages": messages
+        }
+    })
+
+    timer.invalidate()
+    set_bubble()
+    generating = false
+    generating_icon = 0
+    if (openai.data.error) return $ui.error(openai.data.error.message)
+
+    if (!multi_turn) $keyboard.insert(openai.data.choices[0].message.content)
+    if (multi_turn) $keyboard.insert(`ð\n\nð¤ ASSISTANT:\n${openai.data.choices[0].message.content}ð\n\nð¨âð» USER:\n`)
+
+    if (!usage_toast) return
+    let usage = openai.data.usage
+    $ui.toast(`Usage: P${usage.prompt_tokens} + C${usage.completion_tokens} = T${usage.total_tokens}`)
+}
+
+async function get_content(length) {
+    let content = $keyboard.selectedText || await $keyboard.getAllText()
+    if (length) content = `Length: ${content.replace(/(âï¸ SYSTEM|ð¨âð» USER|ð¤ ASSISTANT):\n|ð/g, "").replace(/\n+/g, "\n").length}\n\n${content}`
+    return content
+}
+
+function delete_content(times) {
+    for (let i = 0; i < times; i++) {
+        $keyboard.delete()
+    }
+}
+
+function set_bubble() {
+    $("footer").symbol = multi_turn ? "bubble.left.and.bubble.right" : "bubble.left"
+}
